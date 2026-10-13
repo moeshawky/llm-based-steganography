@@ -29,20 +29,6 @@ def weight_identity(model_name):
     return files
 
 
-DISALLOWED_WORDS = {
-    "assistant", "example", "format", "input", "instruction", "instructions",
-    "message", "messages", "metadata", "note", "output", "prompt", "prompts",
-    "recipient", "recipients", "response", "role", "sender", "sent", "system",
-    "timestamp", "transcript", "user", "analysis",
-}
-
-
-def ordinary_visible_token(text):
-    if not text or any(ch in text for ch in '\r\n\t0123456789#{}[]()<>*`|\\\":~&=+_^%$@/“”„‟«»（）【】'):
-        return False
-    return text.lower().strip(" .,!?;'-_") not in DISALLOWED_WORDS
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)

@@ -19,20 +19,6 @@ def fail(exc):
     print(json.dumps({"ok": False, "error": str(exc)}, separators=(",", ":")), flush=True)
 
 
-DISALLOWED_WORDS = {
-    "assistant", "example", "format", "input", "instruction", "instructions",
-    "message", "messages", "metadata", "note", "output", "prompt", "prompts",
-    "recipient", "recipients", "response", "role", "sender", "sent", "system",
-    "timestamp", "transcript", "user", "analysis",
-}
-
-
-def ordinary_visible_token(text):
-    if not text or any(ch in text for ch in '\r\n\t0123456789#{}[]()<>*`|\\\":~&=+_^%$@/“”„‟«»（）【】'):
-        return False
-    return text.lower().strip(" .,!?;'-_") not in DISALLOWED_WORDS
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -51,6 +37,13 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(args.model, revision=args.revision, torch_dtype=dtype)
     model.to(args.device)
     model.eval()
+    # Exceeding a decoder-only context window does not raise: on CUDA it
+    # usually surfaces as a device-side assert that kills the process, which
+    # destroys every earlier record in the conversation. Refuse the request
+    # up front so the caller sees the limit instead of a crash.
+    limit = getattr(model.config, "max_position_embeddings", None)
+    if not limit:
+        limit = getattr(getattr(model.config, "rope_scaling", None) or {}, "original_max_position_embeddings", None)
     resolved_revision = getattr(model.config, "_commit_hash", None) or args.revision
     identity = json.dumps({
         "model": args.model,
@@ -68,6 +61,35 @@ def main():
         if token.startswith("<|") and token.endswith("|>"):
             special.add(token_id)
     token_text_cache = {}
+    # Prefix-matched KV cache. Every "next" request arrives with the full context,
+    # but during carrier generation that context grows by exactly one token per
+    # request, so a full re-forward per token dominates the runtime. Reuse is only
+    # permitted when the incoming context starts with the tokens already held, so
+    # a cache hit can only ever return the state a full forward would have built.
+    cache = None
+    cached_ids = []
+    cached_logits = None
+
+    def next_logits(ids):
+        """Logits for the position after ids, reusing the prefix cache when exact."""
+        nonlocal cache, cached_ids, cached_logits
+        hold = len(cached_ids)
+        if cache is not None and hold > 0 and ids[:hold] == cached_ids:
+            if hold == len(ids):
+                return cached_logits
+            fresh = torch.tensor([ids[hold:]], device=args.device)
+            with torch.inference_mode():
+                out = model(input_ids=fresh, past_key_values=cache, use_cache=True)
+            cache = out.past_key_values
+            cached_ids = list(ids)
+            cached_logits = out.logits[0, -1].float()
+            return cached_logits
+        with torch.inference_mode():
+            out = model(input_ids=torch.tensor([ids], device=args.device), use_cache=True)
+        cache = out.past_key_values
+        cached_ids = list(ids)
+        cached_logits = out.logits[0, -1].float()
+        return cached_logits
 
     def token_text(token_id):
         if token_id not in token_text_cache:
@@ -95,9 +117,15 @@ def main():
                 visible_tokens = request.get("visible_tokens")
                 if not ids:
                     raise ValueError("model context cannot be empty")
-                input_ids = torch.tensor([ids], device=args.device)
+                if limit and len(ids) > int(limit):
+                    raise ValueError(
+                        f"context of {len(ids)} tokens exceeds the model limit of {int(limit)}; "
+                        "start a new conversation to reset the context"
+                    )
                 with torch.inference_mode():
-                    logits = model(input_ids=input_ids).logits[0, -1].float()
+                    # Clone so the special-token mask below never mutates the
+                    # tensor retained by the prefix cache.
+                    logits = next_logits(ids).clone()
                     # The mask must be applied inside inference_mode: newer torch
                     # versions reject in-place writes to inference tensors made
                     # from outside the block.
