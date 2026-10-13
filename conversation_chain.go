@@ -178,7 +178,7 @@ func (c *ConversationChain) Send(ctx context.Context, from string, plaintext []b
 			}
 			return ChainRecord{}, err
 		}
-		human := humanWrittenCarrier(carrier)
+		human, reason := humanWrittenCarrierReason(carrier)
 		semanticMargin := math.Inf(1)
 		if codec.Config().SemanticJudge {
 			semanticMargin = math.Inf(-1)
@@ -189,8 +189,11 @@ func (c *ConversationChain) Send(ctx context.Context, from string, plaintext []b
 				return ChainRecord{}, fmt.Errorf("judge generated carrier: %w", err)
 			}
 			human = semanticMargin >= codec.Config().SemanticThreshold
+			if !human {
+				reason = fmt.Sprintf("semantic judge scored margin %.3f, below threshold %.3f", semanticMargin, codec.Config().SemanticThreshold)
+			}
 		}
-		options = append(options, carrierOption{text: carrier, metrics: metrics, human: human, semanticMargin: semanticMargin})
+		options = append(options, carrierOption{text: carrier, metrics: metrics, human: human, semanticMargin: semanticMargin, reason: reason})
 	}
 	best := selectCarrier(options, codec.Config().StrictStyle, codec.Config().NaturalnessSlack)
 	if best == "" {
@@ -198,13 +201,11 @@ func (c *ConversationChain) Send(ctx context.Context, from string, plaintext []b
 			return ChainRecord{}, fmt.Errorf("could not produce a transport-safe carrier after %d trials: %w", trialCount, lastErr)
 		}
 		if len(options) != 0 {
-			bestMargin := math.Inf(-1)
+			reasons := make([]string, 0, len(options))
 			for _, option := range options {
-				if option.semanticMargin > bestMargin {
-					bestMargin = option.semanticMargin
-				}
+				reasons = append(reasons, option.reason)
 			}
-			return ChainRecord{}, fmt.Errorf("none of %d carrier trials passed the human-writing checks (best semantic YES-NO margin %.3f)", trialCount, bestMargin)
+			return ChainRecord{}, fmt.Errorf("none of %d carrier trials passed the human-writing checks: %s", trialCount, strings.Join(reasons, "; "))
 		}
 		return ChainRecord{}, fmt.Errorf("none of %d carrier trials produced a carrier", trialCount)
 	}
@@ -218,6 +219,7 @@ type carrierOption struct {
 	metrics        CarrierMetrics
 	human          bool
 	semanticMargin float64
+	reason         string
 }
 
 func (o carrierOption) naturalnessScore() float64 {
@@ -487,33 +489,51 @@ func validateSender(from string) error {
 // the language model. Selection among passing trials is then purely by visible
 // character count.
 func humanWrittenCarrier(text string) bool {
+	ok, _ := humanWrittenCarrierReason(text)
+	return ok
+}
+
+// humanWrittenCarrierReason reports which rule a carrier violated. The gate
+// decides whether a generation is good enough to transmit, so when every trial
+// fails the caller needs the specific reason to act on. Returning a bare false
+// made a total failure indistinguishable from a single bad sample.
+func humanWrittenCarrierReason(text string) (bool, string) {
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" || !endsSentence(trimmed) || strings.Count(trimmed, "?") > 4 {
-		return false
+	if trimmed == "" {
+		return false, "empty carrier"
 	}
-	if strings.ContainsAny(trimmed, "\r\n\t") || strings.Contains(trimmed, "  ") {
-		return false
+	if !endsSentence(trimmed) {
+		return false, "carrier does not end on sentence-final punctuation"
+	}
+	if strings.Count(trimmed, "?") > 4 {
+		return false, "carrier asks more than four questions"
+	}
+	if strings.ContainsAny(trimmed, "\r\n\t") {
+		return false, "carrier contains a line break or tab"
+	}
+	if strings.Contains(trimmed, "  ") {
+		return false, "carrier contains a double space"
 	}
 	words := strings.Fields(strings.ToLower(trimmed))
 	if len(words) < 3 {
-		return false
+		return false, fmt.Sprintf("carrier has %d words, fewer than the 3 required", len(words))
 	}
 	normalized := make([]string, len(words))
 	for i, word := range words {
 		normalized[i] = strings.Trim(word, ".,!?;:'\"")
 		if i > 0 && normalized[i] != "" && normalized[i] == normalized[i-1] {
-			return false
+			return false, fmt.Sprintf("carrier repeats %q back to back", normalized[i])
 		}
 	}
 	seen := make(map[string]struct{}, len(words))
 	for i := 0; i+3 < len(normalized); i++ {
 		gram := strings.Join(normalized[i:i+4], " ")
 		if _, duplicate := seen[gram]; duplicate {
-			return false
+			return false, fmt.Sprintf("carrier repeats the 4-word phrase %q", gram)
 		}
 		seen[gram] = struct{}{}
 	}
-	return true
+	return true, ""
 }
 
 func semanticHumanWritten(ctx context.Context, model LanguageModel, text string) (bool, float64, error) {
