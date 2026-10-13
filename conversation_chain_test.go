@@ -358,8 +358,19 @@ func TestStrictChainRefusesNonHumanFallback(t *testing.T) {
 	chain.baseConfig.StrictStyle = true
 	chain.baseConfig.CandidatePool = 1
 	chain.baseConfig.CarrierTrials = 2
-	if _, err := chain.Send(context.Background(), "bob", []byte("hello")); err == nil || !strings.Contains(err.Error(), "human-writing checks") {
-		t.Fatalf("strict chain accepted fake non-prose carrier: %v", err)
+	// The strict chain must refuse: neither the acceptance of a non-prose
+	// carrier nor the number of trials it burned may be traded away for the
+	// clearer wording. The message now reads "usable carrier" because a trial
+	// that errors and a trial whose carrier fails the gate are reported together.
+	_, err := chain.Send(context.Background(), "bob", []byte("hello"))
+	if err == nil {
+		t.Fatal("strict chain accepted fake non-prose carrier")
+	}
+	if !strings.Contains(err.Error(), "usable carrier") {
+		t.Fatalf("strict chain failure did not explain that no trial produced a usable carrier: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sentence-final punctuation") {
+		t.Fatalf("strict chain failure did not name the violated rule: %v", err)
 	}
 }
 

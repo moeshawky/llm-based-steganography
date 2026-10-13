@@ -158,7 +158,7 @@ func (c *ConversationChain) Send(ctx context.Context, from string, plaintext []b
 	}
 	trialCount := codec.Config().CarrierTrials
 	var options []carrierOption
-	var lastErr error
+	var trialErrors []string
 	for trial := 0; trial < trialCount; trial++ {
 		sealed, err := c.sealTrial(from, record.Index, record.SenderSequence, trial, plaintext)
 		if err != nil {
@@ -172,11 +172,16 @@ func (c *ConversationChain) Send(ctx context.Context, from string, plaintext []b
 			carrier, metrics, err = codec.EncodeWithMetrics(ctx, sealed)
 		}
 		if err != nil {
-			lastErr = err
-			if strings.Contains(err.Error(), "tokenizer cannot losslessly represent") {
-				continue
-			}
-			return ChainRecord{}, err
+			// A trial that cannot produce a usable carrier is a failed trial,
+			// not a failed send. Trials exist to absorb exactly this: a
+			// runaway generation that exhausts the model's context, an
+			// arithmetic coder that stalls before confirming every bit, or a
+			// candidate pool the model could not fill. Returning here let a
+			// single bad trial discard every other trial, so raising
+			// carrier_trials to survive one bad sample made the failure
+			// strictly more likely instead of less.
+			trialErrors = append(trialErrors, err.Error())
+			continue
 		}
 		human, reason := humanWrittenCarrierReason(carrier)
 		semanticMargin := math.Inf(1)
@@ -197,17 +202,15 @@ func (c *ConversationChain) Send(ctx context.Context, from string, plaintext []b
 	}
 	best := selectCarrier(options, codec.Config().StrictStyle, codec.Config().NaturalnessSlack)
 	if best == "" {
-		if lastErr != nil {
-			return ChainRecord{}, fmt.Errorf("could not produce a transport-safe carrier after %d trials: %w", trialCount, lastErr)
+		reasons := make([]string, 0, len(options)+len(trialErrors))
+		for _, option := range options {
+			reasons = append(reasons, option.reason)
 		}
-		if len(options) != 0 {
-			reasons := make([]string, 0, len(options))
-			for _, option := range options {
-				reasons = append(reasons, option.reason)
-			}
-			return ChainRecord{}, fmt.Errorf("none of %d carrier trials passed the human-writing checks: %s", trialCount, strings.Join(reasons, "; "))
+		reasons = append(reasons, trialErrors...)
+		if len(reasons) == 0 {
+			return ChainRecord{}, fmt.Errorf("none of %d carrier trials produced a carrier", trialCount)
 		}
-		return ChainRecord{}, fmt.Errorf("none of %d carrier trials produced a carrier", trialCount)
+		return ChainRecord{}, fmt.Errorf("none of %d carrier trials produced a usable carrier: %s", trialCount, strings.Join(reasons, "; "))
 	}
 	record.Encrypted = best
 	c.commit(record)
