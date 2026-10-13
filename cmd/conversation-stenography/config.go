@@ -10,12 +10,16 @@ import (
 )
 
 // localGenerativeConfig mirrors conversation-stenography.local.json, the optional local
-// defaults file for the generative and conversation-chain subcommands.
+// defaults file for the generative and conversation-chain subcommands. Device and dtype
+// select the transformers runtime's compute target (e.g. "cuda" + "float32"); empty
+// values keep the portable cpu/float32 defaults.
 type localGenerativeConfig struct {
 	Runtime           string  `json:"runtime"`
 	Python            string  `json:"python"`
 	Model             string  `json:"model"`
 	Revision          string  `json:"revision"`
+	Device            string  `json:"device"`
+	Dtype             string  `json:"dtype"`
 	Prompt            string  `json:"prompt"`
 	TopN              int     `json:"top_n"`
 	Coding            string  `json:"coding"`

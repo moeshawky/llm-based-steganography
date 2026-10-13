@@ -278,8 +278,12 @@ For automation and scripting:
 | `CONVERSATION_STENOGRAPHY_MODEL` | Override model path |
 | `CONVERSATION_STENOGRAPHY_PYTHON` | Override Python path |
 | `CONVERSATION_STENOGRAPHY_RUNTIME` | Override runtime (`mlx` or `transformers`) |
+| `CONVERSATION_STENOGRAPHY_DEVICE` | Transformers compute device (e.g. `cuda:0`, `cpu`) |
+| `CONVERSATION_STENOGRAPHY_DTYPE` | Transformers dtype (`float32`, `float16`, `bfloat16`) |
 
 Runtime configuration is machine-specific and is intentionally not committed.
+The `device` and `dtype` keys in `conversation-stenography.local.json` are
+the persistent form of the two variables above; the variables win when set.
 Run `conversation-stenography setup` to generate
 `conversation-stenography.local.json`, or copy
 `conversation-stenography.example.json` and adjust it for your environment.

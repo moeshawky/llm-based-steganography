@@ -94,11 +94,13 @@ func runChain(mode string, args []string, in io.Reader, out, errOut io.Writer) e
 	}
 	backendPath := resolveSupportFile("python/hf_model.py")
 	modelArgs := []string{"--model", *modelName, "--revision", *revision}
+	device := envOr("CONVERSATION_STENOGRAPHY_DEVICE", defaultString(local.Device, "cpu"))
+	dtype := envOr("CONVERSATION_STENOGRAPHY_DTYPE", defaultString(local.Dtype, "float32"))
 	switch *runtimeName {
 	case "mlx":
 		backendPath = resolveSupportFile("python/mlx_model.py")
 	case "transformers":
-		modelArgs = append(modelArgs, "--device", "cpu", "--dtype", "float32")
+		modelArgs = append(modelArgs, "--device", device, "--dtype", dtype)
 	default:
 		return fmt.Errorf("unknown runtime %q", *runtimeName)
 	}
