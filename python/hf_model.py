@@ -98,8 +98,11 @@ def main():
                 input_ids = torch.tensor([ids], device=args.device)
                 with torch.inference_mode():
                     logits = model(input_ids=input_ids).logits[0, -1].float()
-                if special:
-                    logits[list(special)] = -torch.inf
+                    # The mask must be applied inside inference_mode: newer torch
+                    # versions reject in-place writes to inference tensors made
+                    # from outside the block.
+                    if special:
+                        logits[list(special)] = -torch.inf
                 pool_n = top_n if visible_tokens is None else min(logits.shape[-1], top_n * 4)
                 values, indices = torch.topk(logits, k=pool_n, sorted=True)
                 candidates = []
